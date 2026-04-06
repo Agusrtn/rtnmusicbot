@@ -4,6 +4,7 @@ import os
 from dotenv import load_dotenv
 import logging
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 logging.basicConfig(level=logging.INFO)
@@ -228,4 +229,14 @@ async def help_command(ctx: discord.ApplicationContext):
 # Ejecutar el bot
 if __name__ == "__main__":
     start_healthcheck_server()
-    bot.run(TOKEN)
+
+    retry_seconds = int(os.getenv("DISCORD_RETRY_SECONDS", "180"))
+    while True:
+        try:
+            bot.run(TOKEN)
+            break
+        except Exception as e:
+            # Evita que Render reinicie en bucle rapido cuando Discord responde 1015/401/429.
+            logging.error(f"❌ Error al iniciar sesion en Discord: {e}")
+            logging.info(f"⏳ Reintentando conexion en {retry_seconds} segundos...")
+            time.sleep(retry_seconds)
