@@ -66,6 +66,11 @@ ytdl_format_options = {
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'web'],
+        }
+    },
 }
 
 if COOKIES_FILE:
@@ -84,6 +89,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
     async def from_url(cls, url, *, loop=None):
         loop = loop or bot.loop
         format_candidates = [
+            'bestaudio[acodec!=none]/bestaudio/best',
             'bestaudio/best',
             'bestaudio*',
             'best[ext=mp4]/best',
@@ -124,6 +130,51 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 )
             except Exception as err:
                 last_error = err
+
+        # Ultimo fallback: extraer metadata sin forzar formato y elegir audio manualmente.
+        try:
+            fallback_options = dict(ytdl_format_options)
+            fallback_options.pop('format', None)
+            if COOKIES_FILE:
+                fallback_options['cookiefile'] = COOKIES_FILE
+            local_ytdl = youtube_dl.YoutubeDL(fallback_options)
+            data = await loop.run_in_executor(None, lambda: local_ytdl.extract_info(url, download=False))
+
+            if 'entries' in data:
+                data = next((entry for entry in data['entries'] if entry), None)
+
+            if not data:
+                raise RuntimeError("No se obtuvieron datos de YouTube")
+
+            formats = data.get('formats') or []
+            audio_formats = [
+                f for f in formats
+                if f.get('url') and f.get('acodec') not in (None, 'none')
+            ]
+
+            if not audio_formats:
+                raise RuntimeError("No hay formatos de audio disponibles en este video")
+
+            # Prioriza audio-only por bitrate; si no existe, usa el mejor con audio.
+            audio_only = [f for f in audio_formats if f.get('vcodec') in (None, 'none')]
+            candidates = audio_only if audio_only else audio_formats
+            best = max(candidates, key=lambda f: (f.get('abr') or 0, f.get('tbr') or 0))
+            filename = best.get('url')
+
+            if not filename:
+                raise RuntimeError("El formato seleccionado no incluye URL")
+
+            logging.info("✅ Formato seleccionado por fallback manual")
+            return cls(
+                discord.FFmpegPCMAudio(
+                    filename,
+                    before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                    options="-vn",
+                ),
+                data=data,
+            )
+        except Exception as err:
+            last_error = err
 
         raise RuntimeError(f"No se pudo extraer audio con formatos alternativos: {last_error}")
 
