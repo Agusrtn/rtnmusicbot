@@ -3,8 +3,28 @@ import yt_dlp as youtube_dl
 import os
 from dotenv import load_dotenv
 import logging
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 logging.basicConfig(level=logging.INFO)
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, format, *args):
+        return
+
+
+def start_healthcheck_server():
+    port = int(os.getenv("PORT", "10000"))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
 
 # Cargar variables de entorno
 load_dotenv()
@@ -146,4 +166,5 @@ async def help_command(ctx: discord.ApplicationContext):
 
 # Ejecutar el bot
 if __name__ == "__main__":
+    start_healthcheck_server()
     bot.run(TOKEN)
