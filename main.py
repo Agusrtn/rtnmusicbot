@@ -3,6 +3,9 @@ from discord.ext import commands
 import yt_dlp as youtube_dl
 import os
 from dotenv import load_dotenv
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 # Cargar variables de entorno
 load_dotenv()
@@ -141,6 +144,16 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="/help", value="Muestra este mensaje de ayuda", inline=False)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# Sync commands to Discord
+@bot.event
+async def on_ready():
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ Bot sincronizado: {len(synced)} comando(s)")
+    except Exception as e:
+        print(f"❌ Error al sincronizar comandos: {e}")
+    print(f'✅ {bot.user} está listo!')
 
 # Ejecutar el bot
 if __name__ == "__main__":
