@@ -185,15 +185,15 @@ async def on_ready():
 
 async def safe_reply(ctx: discord.ApplicationContext, content: str, ephemeral: bool = False):
     try:
-        if not getattr(ctx, "responded", False):
-            await ctx.respond(content, ephemeral=ephemeral)
-        else:
-            await ctx.send(content)
+        await ctx.followup.send(content, ephemeral=ephemeral)
     except Exception:
         try:
-            await ctx.channel.send(content)
+            await ctx.respond(content, ephemeral=ephemeral)
         except Exception:
-            pass
+            try:
+                await ctx.channel.send(content)
+            except Exception:
+                pass
 
 
 @bot.event
@@ -206,7 +206,12 @@ async def play(ctx: discord.ApplicationContext, cancion: str):
     """
     Reproduce una canción de YouTube en el canal de voz
     """
-    # Responder rapido para evitar timeout de interaccion.
+    # Acknowledge inmediato para evitar timeout de interaccion.
+    try:
+        await ctx.defer()
+    except Exception:
+        pass
+
     if not ctx.author or not ctx.author.voice:
         await safe_reply(ctx, "❌ Debes estar en un canal de voz para usar este comando.", ephemeral=True)
         return
