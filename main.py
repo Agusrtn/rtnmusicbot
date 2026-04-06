@@ -1,5 +1,4 @@
 import discord
-from discord.ext import commands
 import yt_dlp as youtube_dl
 import os
 from dotenv import load_dotenv
@@ -15,7 +14,7 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
-bot = commands.Bot(command_prefix='/', intents=intents)
+bot = discord.Bot(intents=intents)
 
 # Configuración de yt-dlp
 ytdl_format_options = {
@@ -48,31 +47,31 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
 @bot.event
 async def on_ready():
-    print(f'{bot.user} se ha conectado a Discord!')
+    print(f'✅ {bot.user} está listo!')
 
-@bot.tree.command(name="play", description="Reproduce música de YouTube")
-async def play(interaction: discord.Interaction, cancion: str):
+@bot.slash_command(name="play", description="Reproduce música de YouTube")
+async def play(ctx: discord.ApplicationContext, cancion: str):
     """
     Reproduce una canción de YouTube en el canal de voz
     """
     # Verificar si el usuario está en un canal de voz
-    if not interaction.user.voice:
-        await interaction.response.send_message("❌ Debes estar en un canal de voz para usar este comando.", ephemeral=True)
+    if not ctx.author.voice:
+        await ctx.respond("❌ Debes estar en un canal de voz para usar este comando.", ephemeral=True)
         return
     
-    channel = interaction.user.voice.channel
+    channel = ctx.author.voice.channel
     
     # Defer la respuesta ya que puede tomar tiempo
-    await interaction.response.defer()
+    await ctx.defer()
     
     try:
         # Conectar al canal de voz
         voice_client = await channel.connect()
     except discord.ClientException:
-        voice_client = interaction.guild.voice_client
+        voice_client = ctx.guild.voice_client
     
     try:
-        await interaction.followup.send(f"🎵 Buscando: **{cancion}**...")
+        await ctx.followup.send(f"🎵 Buscando: **{cancion}**...")
         
         # Descargar la información de la canción
         source = await YTDLSource.from_url(cancion, loop=bot.loop)
@@ -80,59 +79,59 @@ async def play(interaction: discord.Interaction, cancion: str):
         # Reproducir la canción
         voice_client.play(source, after=lambda e: print(f'Error: {e}') if e else None)
         
-        await interaction.followup.send(f"▶️ Reproduciendo: **{source.title}**")
+        await ctx.followup.send(f"▶️ Reproduciendo: **{source.title}**")
     
     except Exception as e:
-        await interaction.followup.send(f"❌ Error al reproducir la canción: {str(e)}")
+        await ctx.followup.send(f"❌ Error al reproducir la canción: {str(e)}")
 
-@bot.tree.command(name="stop", description="Detiene la reproducción de música")
-async def stop(interaction: discord.Interaction):
+@bot.slash_command(name="stop", description="Detiene la reproducción de música")
+async def stop(ctx: discord.ApplicationContext):
     """
     Detiene la reproducción y desconecta del canal de voz
     """
-    if not interaction.guild.voice_client:
-        await interaction.response.send_message("❌ El bot no está en un canal de voz.", ephemeral=True)
+    if not ctx.guild.voice_client:
+        await ctx.respond("❌ El bot no está en un canal de voz.", ephemeral=True)
         return
     
-    voice_client = interaction.guild.voice_client
+    voice_client = ctx.guild.voice_client
     voice_client.stop()
     await voice_client.disconnect()
-    await interaction.response.send_message("⏹️ Música detenida y bot desconectado.")
+    await ctx.respond("⏹️ Música detenida y bot desconectado.")
 
-@bot.tree.command(name="pause", description="Pausa la música")
-async def pause(interaction: discord.Interaction):
+@bot.slash_command(name="pause", description="Pausa la música")
+async def pause(ctx: discord.ApplicationContext):
     """
     Pausa la reproducción de música
     """
-    if not interaction.guild.voice_client:
-        await interaction.response.send_message("❌ El bot no está reproduciendo nada.", ephemeral=True)
+    if not ctx.guild.voice_client:
+        await ctx.respond("❌ El bot no está reproduciendo nada.", ephemeral=True)
         return
     
-    voice_client = interaction.guild.voice_client
+    voice_client = ctx.guild.voice_client
     if voice_client.is_playing():
         voice_client.pause()
-        await interaction.response.send_message("⏸️ Música pausada.")
+        await ctx.respond("⏸️ Música pausada.")
     else:
-        await interaction.response.send_message("❌ El bot no está reproduciendo nada.", ephemeral=True)
+        await ctx.respond("❌ El bot no está reproduciendo nada.", ephemeral=True)
 
-@bot.tree.command(name="resume", description="Reanuda la música")
-async def resume(interaction: discord.Interaction):
+@bot.slash_command(name="resume", description="Reanuda la música")
+async def resume(ctx: discord.ApplicationContext):
     """
     Reanuda la reproducción de música
     """
-    if not interaction.guild.voice_client:
-        await interaction.response.send_message("❌ El bot no está en un canal de voz.", ephemeral=True)
+    if not ctx.guild.voice_client:
+        await ctx.respond("❌ El bot no está en un canal de voz.", ephemeral=True)
         return
     
-    voice_client = interaction.guild.voice_client
+    voice_client = ctx.guild.voice_client
     if voice_client.is_paused():
         voice_client.resume()
-        await interaction.response.send_message("▶️ Música reanudada.")
+        await ctx.respond("▶️ Música reanudada.")
     else:
-        await interaction.response.send_message("❌ La música no está pausada.", ephemeral=True)
+        await ctx.respond("❌ La música no está pausada.", ephemeral=True)
 
-@bot.tree.command(name="help", description="Muestra los comandos disponibles")
-async def help_command(interaction: discord.Interaction):
+@bot.slash_command(name="help", description="Muestra los comandos disponibles")
+async def help_command(ctx: discord.ApplicationContext):
     """
     Muestra la lista de comandos disponibles
     """
@@ -143,17 +142,7 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="/stop", value="Detiene la música y desconecta del canal", inline=False)
     embed.add_field(name="/help", value="Muestra este mensaje de ayuda", inline=False)
     
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# Sync commands to Discord
-@bot.event
-async def on_ready():
-    try:
-        synced = await bot.tree.sync()
-        print(f"✅ Bot sincronizado: {len(synced)} comando(s)")
-    except Exception as e:
-        print(f"❌ Error al sincronizar comandos: {e}")
-    print(f'✅ {bot.user} está listo!')
+    await ctx.respond(embed=embed, ephemeral=True)
 
 # Ejecutar el bot
 if __name__ == "__main__":
