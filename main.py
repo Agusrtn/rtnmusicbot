@@ -132,54 +132,59 @@ async def on_ready():
     print(f'✅ {bot.user} está listo!')
 
 
+async def safe_reply(ctx: discord.ApplicationContext, content: str, ephemeral: bool = False):
+    try:
+        if not getattr(ctx, "responded", False):
+            await ctx.respond(content, ephemeral=ephemeral)
+        else:
+            await ctx.send(content)
+    except Exception:
+        try:
+            await ctx.channel.send(content)
+        except Exception:
+            pass
+
+
 @bot.event
 async def on_application_command_error(ctx: discord.ApplicationContext, error: Exception):
     logging.exception("Error en comando de aplicacion", exc_info=error)
-    try:
-        if ctx.response.is_done():
-            await ctx.followup.send("❌ Ocurrio un error al ejecutar el comando.", ephemeral=True)
-        else:
-            await ctx.respond("❌ Ocurrio un error al ejecutar el comando.", ephemeral=True)
-    except Exception:
-        pass
+    await safe_reply(ctx, "❌ Ocurrio un error al ejecutar el comando.", ephemeral=True)
 
 @bot.slash_command(name="play", description="Reproduce música de YouTube")
 async def play(ctx: discord.ApplicationContext, cancion: str):
     """
     Reproduce una canción de YouTube en el canal de voz
     """
+    # Responder rapido para evitar timeout de interaccion.
+    if not ctx.author or not ctx.author.voice:
+        await safe_reply(ctx, "❌ Debes estar en un canal de voz para usar este comando.", ephemeral=True)
+        return
+
+    await safe_reply(ctx, f"🎵 Buscando: **{cancion}**...")
+
+    channel = ctx.author.voice.channel
+
     try:
-        # Acknowledge inmediato para evitar timeout de interaccion.
-        await ctx.defer()
-
-        # Verificar si el usuario está en un canal de voz
-        if not ctx.author or not ctx.author.voice:
-            await ctx.followup.send("❌ Debes estar en un canal de voz para usar este comando.", ephemeral=True)
-            return
-
-        channel = ctx.author.voice.channel
-
-        # Conectar al canal de voz
-        voice_client = await channel.connect()
-    except discord.ClientException:
         voice_client = ctx.guild.voice_client
+        if voice_client and voice_client.channel != channel:
+            await voice_client.move_to(channel)
+        elif not voice_client:
+            voice_client = await channel.connect()
     except Exception as e:
-        await ctx.followup.send(f"❌ Error inicial al ejecutar /play: {e}", ephemeral=True)
+        await safe_reply(ctx, f"❌ Error al conectarme al canal de voz: {e}")
         return
     
     try:
-        await ctx.followup.send(f"🎵 Buscando: **{cancion}**...")
-        
         # Descargar la información de la canción
         source = await YTDLSource.from_url(cancion, loop=bot.loop)
         
         # Reproducir la canción
         voice_client.play(source, after=lambda e: print(f'Error: {e}') if e else None)
-        
-        await ctx.followup.send(f"▶️ Reproduciendo: **{source.title}**")
+
+        await safe_reply(ctx, f"▶️ Reproduciendo: **{source.title}**")
     
     except Exception as e:
-        await ctx.followup.send(f"❌ Error al reproducir la canción: {str(e)}")
+        await safe_reply(ctx, f"❌ Error al reproducir la canción: {str(e)}")
 
 @bot.slash_command(name="stop", description="Detiene la reproducción de música")
 async def stop(ctx: discord.ApplicationContext):
