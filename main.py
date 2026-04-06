@@ -80,13 +80,49 @@ class YTDLSource(discord.PCMVolumeTransformer):
     @classmethod
     async def from_url(cls, url, *, loop=None):
         loop = loop or bot.loop
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False))
-        
-        if 'entries' in data:
-            data = data['entries'][0]
-        
-        filename = data['url']
-        return cls(discord.FFmpegPCMAudio(filename, before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", options="-vn"), data=data)
+        format_candidates = [
+            'bestaudio/best',
+            'bestaudio*',
+            'best[ext=mp4]/best',
+            'best',
+        ]
+        last_error = None
+
+        for fmt in format_candidates:
+            try:
+                local_options = dict(ytdl_format_options)
+                local_options['format'] = fmt
+                if COOKIES_FILE:
+                    local_options['cookiefile'] = COOKIES_FILE
+
+                local_ytdl = youtube_dl.YoutubeDL(local_options)
+                data = await loop.run_in_executor(None, lambda: local_ytdl.extract_info(url, download=False))
+
+                if not data:
+                    continue
+
+                if 'entries' in data:
+                    data = next((entry for entry in data['entries'] if entry), None)
+                    if not data:
+                        continue
+
+                filename = data.get('url')
+                if not filename:
+                    continue
+
+                logging.info(f"✅ Formato seleccionado: {fmt}")
+                return cls(
+                    discord.FFmpegPCMAudio(
+                        filename,
+                        before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                        options="-vn",
+                    ),
+                    data=data,
+                )
+            except Exception as err:
+                last_error = err
+
+        raise RuntimeError(f"No se pudo extraer audio con formatos alternativos: {last_error}")
 
 @bot.event
 async def on_ready():
