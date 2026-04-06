@@ -29,6 +29,8 @@ def start_healthcheck_server():
 # Cargar variables de entorno
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN no está configurado. Define la variable de entorno en Fly.io.")
 
 # Escribir cookies de YouTube a archivo temporal si están disponibles
 COOKIES_FILE = None
