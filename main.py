@@ -30,6 +30,21 @@ def start_healthcheck_server():
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
+# Escribir cookies de YouTube a archivo temporal si están disponibles
+COOKIES_FILE = None
+youtube_cookies = os.getenv('YOUTUBE_COOKIES')
+if youtube_cookies:
+    import tempfile, base64
+    try:
+        cookies_data = base64.b64decode(youtube_cookies).decode('utf-8')
+    except Exception:
+        cookies_data = youtube_cookies
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+    tmp.write(cookies_data)
+    tmp.close()
+    COOKIES_FILE = tmp.name
+    logging.info(f"✅ Cookies de YouTube cargadas desde variable de entorno")
+
 # Configuración del bot
 intents = discord.Intents.default()
 intents.message_content = True
@@ -49,6 +64,9 @@ ytdl_format_options = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
 }
+
+if COOKIES_FILE:
+    ytdl_format_options['cookiefile'] = COOKIES_FILE
 
 ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
 
