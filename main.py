@@ -131,26 +131,41 @@ class YTDLSource(discord.PCMVolumeTransformer):
 async def on_ready():
     print(f'✅ {bot.user} está listo!')
 
+
+@bot.event
+async def on_application_command_error(ctx: discord.ApplicationContext, error: Exception):
+    logging.exception("Error en comando de aplicacion", exc_info=error)
+    try:
+        if ctx.response.is_done():
+            await ctx.followup.send("❌ Ocurrio un error al ejecutar el comando.", ephemeral=True)
+        else:
+            await ctx.respond("❌ Ocurrio un error al ejecutar el comando.", ephemeral=True)
+    except Exception:
+        pass
+
 @bot.slash_command(name="play", description="Reproduce música de YouTube")
 async def play(ctx: discord.ApplicationContext, cancion: str):
     """
     Reproduce una canción de YouTube en el canal de voz
     """
-    # Verificar si el usuario está en un canal de voz
-    if not ctx.author.voice:
-        await ctx.respond("❌ Debes estar en un canal de voz para usar este comando.", ephemeral=True)
-        return
-    
-    channel = ctx.author.voice.channel
-    
-    # Defer la respuesta ya que puede tomar tiempo
-    await ctx.defer()
-    
     try:
+        # Acknowledge inmediato para evitar timeout de interaccion.
+        await ctx.defer()
+
+        # Verificar si el usuario está en un canal de voz
+        if not ctx.author or not ctx.author.voice:
+            await ctx.followup.send("❌ Debes estar en un canal de voz para usar este comando.", ephemeral=True)
+            return
+
+        channel = ctx.author.voice.channel
+
         # Conectar al canal de voz
         voice_client = await channel.connect()
     except discord.ClientException:
         voice_client = ctx.guild.voice_client
+    except Exception as e:
+        await ctx.followup.send(f"❌ Error inicial al ejecutar /play: {e}", ephemeral=True)
+        return
     
     try:
         await ctx.followup.send(f"🎵 Buscando: **{cancion}**...")
