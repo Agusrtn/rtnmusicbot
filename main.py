@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import logging
 import threading
 import time
+import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 logging.basicConfig(level=logging.INFO)
@@ -56,21 +57,25 @@ bot = discord.Bot(intents=intents)
 
 # Configuración de yt-dlp
 ytdl_format_options = {
-    'format': 'bestaudio/best',
+    'format': 'bestaudio[acodec!=none]/bestaudio/best',
     'noplaylist': True,
     'default_search': 'ytsearch',
     'quiet': True,
     'no_warnings': True,
     'ignoreerrors': False,
-    'source_address': '0.0.0.0',
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
     'extractor_args': {
         'youtube': {
-            'player_client': ['android', 'web'],
+            'player_client': ['android_music', 'android', 'web'],
         }
     },
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'mp3',
+        'preferredquality': '128',
+    }],
 }
 
 if COOKIES_FILE:
@@ -84,99 +89,46 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.data = data
         self.title = data.get('title')
         self.url = data.get('url')
+        self._filepath = getattr(source, '_filepath', None)
+
+    def cleanup(self):
+        if self._filepath and os.path.exists(self._filepath):
+            try:
+                os.remove(self._filepath)
+            except Exception:
+                pass
 
     @classmethod
     async def from_url(cls, url, *, loop=None):
         loop = loop or bot.loop
-        format_candidates = [
-            'bestaudio[acodec!=none]/bestaudio/best',
-            'bestaudio/best',
-            'bestaudio*',
-            'best[ext=mp4]/best',
-            'best',
-        ]
-        last_error = None
+        tmpdir = tempfile.mkdtemp()
+        opts = dict(ytdl_format_options)
+        opts['outtmpl'] = os.path.join(tmpdir, '%(id)s.%(ext)s')
+        if COOKIES_FILE:
+            opts['cookiefile'] = COOKIES_FILE
 
-        for fmt in format_candidates:
-            try:
-                local_options = dict(ytdl_format_options)
-                local_options['format'] = fmt
-                if COOKIES_FILE:
-                    local_options['cookiefile'] = COOKIES_FILE
+        def _download():
+            with youtube_dl.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if 'entries' in info:
+                    info = next((e for e in info['entries'] if e), None)
+                if not info:
+                    raise RuntimeError("No se pudo obtener información del video")
+                base = ydl.prepare_filename(info)
+                mp3_path = os.path.splitext(base)[0] + '.mp3'
+                if os.path.exists(mp3_path):
+                    return mp3_path, info
+                # fallback: buscar cualquier archivo descargado en tmpdir
+                files = [f for f in os.listdir(tmpdir) if not f.endswith('.part')]
+                if files:
+                    return os.path.join(tmpdir, files[0]), info
+                raise RuntimeError("No se encontró el archivo de audio descargado")
 
-                local_ytdl = youtube_dl.YoutubeDL(local_options)
-                data = await loop.run_in_executor(None, lambda: local_ytdl.extract_info(url, download=False))
-
-                if not data:
-                    continue
-
-                if 'entries' in data:
-                    data = next((entry for entry in data['entries'] if entry), None)
-                    if not data:
-                        continue
-
-                filename = data.get('url')
-                if not filename:
-                    continue
-
-                logging.info(f"✅ Formato seleccionado: {fmt}")
-                return cls(
-                    discord.FFmpegPCMAudio(
-                        filename,
-                        before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-                        options="-vn",
-                    ),
-                    data=data,
-                )
-            except Exception as err:
-                last_error = err
-
-        # Ultimo fallback: extraer metadata sin forzar formato y elegir audio manualmente.
-        try:
-            fallback_options = dict(ytdl_format_options)
-            fallback_options.pop('format', None)
-            if COOKIES_FILE:
-                fallback_options['cookiefile'] = COOKIES_FILE
-            local_ytdl = youtube_dl.YoutubeDL(fallback_options)
-            data = await loop.run_in_executor(None, lambda: local_ytdl.extract_info(url, download=False))
-
-            if 'entries' in data:
-                data = next((entry for entry in data['entries'] if entry), None)
-
-            if not data:
-                raise RuntimeError("No se obtuvieron datos de YouTube")
-
-            formats = data.get('formats') or []
-            audio_formats = [
-                f for f in formats
-                if f.get('url') and f.get('acodec') not in (None, 'none')
-            ]
-
-            if not audio_formats:
-                raise RuntimeError("No hay formatos de audio disponibles en este video")
-
-            # Prioriza audio-only por bitrate; si no existe, usa el mejor con audio.
-            audio_only = [f for f in audio_formats if f.get('vcodec') in (None, 'none')]
-            candidates = audio_only if audio_only else audio_formats
-            best = max(candidates, key=lambda f: (f.get('abr') or 0, f.get('tbr') or 0))
-            filename = best.get('url')
-
-            if not filename:
-                raise RuntimeError("El formato seleccionado no incluye URL")
-
-            logging.info("✅ Formato seleccionado por fallback manual")
-            return cls(
-                discord.FFmpegPCMAudio(
-                    filename,
-                    before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-                    options="-vn",
-                ),
-                data=data,
-            )
-        except Exception as err:
-            last_error = err
-
-        raise RuntimeError(f"No se pudo extraer audio con formatos alternativos: {last_error}")
+        filepath, data = await loop.run_in_executor(None, _download)
+        logging.info(f"✅ Audio descargado: {filepath}")
+        ffmpeg_source = discord.FFmpegPCMAudio(filepath, options="-vn")
+        ffmpeg_source._filepath = filepath
+        return cls(ffmpeg_source, data=data)
 
 @bot.event
 async def on_ready():
@@ -234,9 +186,13 @@ async def play(ctx: discord.ApplicationContext, cancion: str):
         # Descargar la información de la canción
         source = await YTDLSource.from_url(cancion, loop=bot.loop)
         
-        # Reproducir la canción
-        voice_client.play(source, after=lambda e: print(f'Error: {e}') if e else None)
+        # Reproducir la canción y limpiar el archivo temporal al terminar
+        def after_play(e):
+            source.cleanup()
+            if e:
+                logging.error(f'Error durante reproducción: {e}')
 
+        voice_client.play(source, after=after_play)
         await safe_reply(ctx, f"▶️ Reproduciendo: **{source.title}**")
     
     except Exception as e:
