@@ -86,11 +86,6 @@ YTDL_OPTIONS = {
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['android_music', 'android', 'web'],
-        }
-    },
 }
 
 # Opciones de FFmpeg para streaming (reconexión automática)
@@ -115,13 +110,16 @@ class YTDLSource(discord.PCMVolumeTransformer):
         loop = loop or bot.loop
 
         def _extract():
-            with youtube_dl.YoutubeDL(YTDL_OPTIONS) as ydl:
-                info = ydl.extract_info(url, download=False)
+            def _extract_info(opts):
+                with youtube_dl.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
                 if 'entries' in info:
                     info = next((e for e in info['entries'] if e), None)
                 if not info:
                     raise RuntimeError("No se pudo obtener información del video")
+                return info
 
+            def _pick_stream(info):
                 formats = info.get('formats') or []
                 audio_only = sorted(
                     [f for f in formats if f.get('url') and f.get('acodec') not in (None, 'none') and f.get('vcodec') in (None, 'none')],
@@ -146,6 +144,22 @@ class YTDLSource(discord.PCMVolumeTransformer):
                         f"acodec={chosen.get('acodec')} abr={chosen.get('abr')}"
                     )
                 return info
+
+            try:
+                info = _extract_info(dict(YTDL_OPTIONS))
+                return _pick_stream(info)
+            except Exception as first_error:
+                msg = str(first_error)
+                if "Requested format is not available" not in msg:
+                    raise
+
+                logging.warning("⚠️ Reintentando extracción con opciones seguras de yt-dlp")
+                fallback_opts = dict(YTDL_OPTIONS)
+                fallback_opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
+                fallback_opts['format'] = 'best'
+
+                info = _extract_info(fallback_opts)
+                return _pick_stream(info)
 
         data = await loop.run_in_executor(None, _extract)
         stream_url = data.get('selected_stream_url')
@@ -319,13 +333,27 @@ async def formatos(ctx: discord.ApplicationContext, url: str):
     loop = bot.loop
 
     def _extract_formats():
-        info_opts = dict(YTDL_OPTIONS)
-        with youtube_dl.YoutubeDL(info_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        def _extract_info(opts):
+            with youtube_dl.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
             if 'entries' in info:
                 info = next((e for e in info['entries'] if e), None)
             if not info:
                 raise RuntimeError("No se pudo obtener información del video")
+            return info
+
+        try:
+            info = _extract_info(dict(YTDL_OPTIONS))
+        except Exception as first_error:
+            msg = str(first_error)
+            if "Requested format is not available" not in msg:
+                raise
+
+            logging.warning("⚠️ Reintentando listado con opciones seguras de yt-dlp")
+            fallback_opts = dict(YTDL_OPTIONS)
+            fallback_opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
+            fallback_opts['format'] = 'best'
+            info = _extract_info(fallback_opts)
 
         formats = info.get('formats') or []
         audio_formats = [f for f in formats if f.get('acodec') not in (None, 'none') and f.get('url')]
