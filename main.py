@@ -110,7 +110,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 if not info:
                     raise RuntimeError("No se pudo obtener información del video")
 
-            # Paso 2: elegir el mejor formato de audio disponible
+            # Paso 2: elegir formatos de audio candidatos (mejor calidad primero)
             formats = info.get('formats') or []
             
             # Audio-only ordenados por bitrate descendente
@@ -135,24 +135,42 @@ class YTDLSource(discord.PCMVolumeTransformer):
             if not chosen_formats:
                 raise RuntimeError("El video no tiene formatos de audio disponibles")
 
-            chosen = chosen_formats[0]
-            fmt_id = chosen['format_id']
-            logging.info(f"✅ Formato elegido: id={fmt_id} ext={chosen.get('ext')} codec={chosen.get('acodec')} abr={chosen.get('abr')}")
+            # Probar varios format_id para evitar fallos puntuales de disponibilidad
+            candidates = [f for f in chosen_formats if f.get('format_id')]
+            candidates = candidates[:10]
 
-            # Paso 3: descargar con el format_id exacto
-            dl_opts = dict(YTDL_BASE_OPTIONS)
-            dl_opts['format'] = fmt_id
-            dl_opts['outtmpl'] = os.path.join(tmpdir, '%(id)s.%(ext)s')
+            attempted_ids = [f.get('format_id') for f in candidates]
+            logging.info(f"🎧 Formatos candidatos: {attempted_ids}")
 
-            with youtube_dl.YoutubeDL(dl_opts) as ydl:
-                ydl.download([info.get('webpage_url') or url])
+            last_error = None
+            for chosen in candidates:
+                fmt_id = chosen['format_id']
+                logging.info(
+                    f"🔎 Intentando formato: id={fmt_id} ext={chosen.get('ext')} "
+                    f"codec={chosen.get('acodec')} abr={chosen.get('abr')}"
+                )
+
+                dl_opts = dict(YTDL_BASE_OPTIONS)
+                dl_opts['format'] = fmt_id
+                dl_opts['outtmpl'] = os.path.join(tmpdir, '%(id)s.%(ext)s')
+
+                try:
+                    with youtube_dl.YoutubeDL(dl_opts) as ydl:
+                        ydl.download([info.get('webpage_url') or url])
+                    break
+                except Exception as e:
+                    last_error = e
+                    logging.warning(f"❌ Fallo formato {fmt_id}: {e}")
 
             files = [
                 f for f in os.listdir(tmpdir)
                 if not f.endswith('.part') and os.path.getsize(os.path.join(tmpdir, f)) > 0
             ]
             if not files:
-                raise RuntimeError("No se encontró el archivo descargado")
+                raise RuntimeError(
+                    "No se pudo descargar con los formatos candidatos. "
+                    f"Intentados: {attempted_ids}. Error final: {last_error}"
+                )
 
             return os.path.join(tmpdir, files[0]), info
 
