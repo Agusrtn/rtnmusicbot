@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 import logging
 import threading
 import time
-import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 logging.basicConfig(level=logging.INFO)
@@ -69,8 +68,9 @@ if debug_guilds:
 else:
     bot = discord.Bot(intents=intents)
 
-# Configuración base de yt-dlp (sin formato fijo, se define por intento)
-YTDL_BASE_OPTIONS = {
+# Configuración de yt-dlp para streaming directo (sin descargar)
+YTDL_OPTIONS = {
+    'format': 'bestaudio/best',
     'noplaylist': True,
     'default_search': 'ytsearch',
     'quiet': True,
@@ -86,8 +86,14 @@ YTDL_BASE_OPTIONS = {
     },
 }
 
+# Opciones de FFmpeg para streaming (reconexión automática)
+FFMPEG_OPTIONS = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn',
+}
+
 if COOKIES_FILE:
-    YTDL_BASE_OPTIONS['cookiefile'] = COOKIES_FILE
+    YTDL_OPTIONS['cookiefile'] = COOKIES_FILE
 
 
 class YTDLSource(discord.PCMVolumeTransformer):
@@ -96,102 +102,27 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.data = data
         self.title = data.get('title')
         self.url = data.get('url')
-        self._filepath = getattr(source, '_filepath', None)
-
-    def cleanup(self):
-        if self._filepath and os.path.exists(self._filepath):
-            try:
-                os.remove(self._filepath)
-            except Exception:
-                pass
 
     @classmethod
     async def from_url(cls, url, *, loop=None):
         loop = loop or bot.loop
 
-        def _download():
-            tmpdir = tempfile.mkdtemp()
-
-            # Paso 1: extraer info sin descargar para ver qué formatos existen
-            # Paso 1: extraer info SIN especificar formato para obtener todos los formatos reales
-            info_opts = dict(YTDL_BASE_OPTIONS)
-            # No se pone 'format' ni 'skip_download'; yt-dlp devuelve todos los formatos sin filtrar
-
-            with youtube_dl.YoutubeDL(info_opts) as ydl:
+        def _extract():
+            with youtube_dl.YoutubeDL(YTDL_OPTIONS) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if 'entries' in info:
                     info = next((e for e in info['entries'] if e), None)
                 if not info:
                     raise RuntimeError("No se pudo obtener información del video")
+                return info
 
-            # Paso 2: elegir formatos de audio candidatos (mejor calidad primero)
-            formats = info.get('formats') or []
-            
-            # Audio-only ordenados por bitrate descendente
-            audio_only = sorted(
-                [f for f in formats if
-                 f.get('url') and
-                 f.get('acodec') not in (None, 'none') and
-                 f.get('vcodec') in (None, 'none')],
-                key=lambda f: f.get('abr') or f.get('tbr') or 0,
-                reverse=True
-            )
-            # Fallback: cualquier formato con audio
-            any_audio = sorted(
-                [f for f in formats if
-                 f.get('url') and
-                 f.get('acodec') not in (None, 'none')],
-                key=lambda f: f.get('abr') or f.get('tbr') or 0,
-                reverse=True
-            )
+        data = await loop.run_in_executor(None, _extract)
+        stream_url = data.get('url')
+        if not stream_url:
+            raise RuntimeError("No se pudo obtener la URL de streaming")
 
-            chosen_formats = audio_only if audio_only else any_audio
-            if not chosen_formats:
-                raise RuntimeError("El video no tiene formatos de audio disponibles")
-
-            # Probar varios format_id para evitar fallos puntuales de disponibilidad
-            candidates = [f for f in chosen_formats if f.get('format_id')]
-            candidates = candidates[:10]
-
-            attempted_ids = [f.get('format_id') for f in candidates]
-            logging.info(f"🎧 Formatos candidatos: {attempted_ids}")
-
-            last_error = None
-            for chosen in candidates:
-                fmt_id = chosen['format_id']
-                logging.info(
-                    f"🔎 Intentando formato: id={fmt_id} ext={chosen.get('ext')} "
-                    f"codec={chosen.get('acodec')} abr={chosen.get('abr')}"
-                )
-
-                dl_opts = dict(YTDL_BASE_OPTIONS)
-                dl_opts['format'] = fmt_id
-                dl_opts['outtmpl'] = os.path.join(tmpdir, '%(id)s.%(ext)s')
-
-                try:
-                    with youtube_dl.YoutubeDL(dl_opts) as ydl:
-                        ydl.download([info.get('webpage_url') or url])
-                    break
-                except Exception as e:
-                    last_error = e
-                    logging.warning(f"❌ Fallo formato {fmt_id}: {e}")
-
-            files = [
-                f for f in os.listdir(tmpdir)
-                if not f.endswith('.part') and os.path.getsize(os.path.join(tmpdir, f)) > 0
-            ]
-            if not files:
-                raise RuntimeError(
-                    "No se pudo descargar con los formatos candidatos. "
-                    f"Intentados: {attempted_ids}. Error final: {last_error}"
-                )
-
-            return os.path.join(tmpdir, files[0]), info
-
-        filepath, data = await loop.run_in_executor(None, _download)
-        logging.info(f"▶️ Reproduciendo desde: {filepath}")
-        ffmpeg_source = discord.FFmpegPCMAudio(filepath, options="-vn")
-        ffmpeg_source._filepath = filepath
+        logging.info(f"🎵 Stream URL obtenida para: {data.get('title')}")
+        ffmpeg_source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
         return cls(ffmpeg_source, data=data)
 
 @bot.event
@@ -252,12 +183,11 @@ async def play(ctx: discord.ApplicationContext, cancion: str):
         return
     
     try:
-        # Descargar la información de la canción
+        # Obtener stream directo y reproducir
         source = await YTDLSource.from_url(cancion, loop=bot.loop)
         
-        # Reproducir la canción y limpiar el archivo temporal al terminar
+        # Reproducir la canción
         def after_play(e):
-            source.cleanup()
             if e:
                 logging.error(f'Error durante reproducción: {e}')
 
@@ -339,7 +269,8 @@ async def formatos(ctx: discord.ApplicationContext, url: str):
     loop = bot.loop
 
     def _extract_formats():
-        info_opts = dict(YTDL_BASE_OPTIONS)
+        info_opts = dict(YTDL_OPTIONS)
+        info_opts.pop('format', None)
         with youtube_dl.YoutubeDL(info_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if 'entries' in info:
