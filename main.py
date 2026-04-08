@@ -99,9 +99,9 @@ class YTDLSource(discord.PCMVolumeTransformer):
             tmpdir = tempfile.mkdtemp()
 
             # Paso 1: extraer info sin descargar para ver qué formatos existen
+            # Paso 1: extraer info SIN especificar formato para obtener todos los formatos reales
             info_opts = dict(YTDL_BASE_OPTIONS)
-            info_opts['format'] = 'bestaudio/best'
-            info_opts['skip_download'] = True
+            # No se pone 'format' ni 'skip_download'; yt-dlp devuelve todos los formatos sin filtrar
 
             with youtube_dl.YoutubeDL(info_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -113,15 +113,20 @@ class YTDLSource(discord.PCMVolumeTransformer):
             # Paso 2: elegir el mejor formato de audio disponible
             formats = info.get('formats') or []
             
-            # audio-only ordenados por bitrate descendente
+            # Audio-only ordenados por bitrate descendente
             audio_only = sorted(
-                [f for f in formats if f.get('acodec') not in (None, 'none') and f.get('vcodec') in (None, 'none') and f.get('url')],
+                [f for f in formats if
+                 f.get('url') and
+                 f.get('acodec') not in (None, 'none') and
+                 f.get('vcodec') in (None, 'none')],
                 key=lambda f: f.get('abr') or f.get('tbr') or 0,
                 reverse=True
             )
-            # si no hay audio-only, usar formatos con audio+video
+            # Fallback: cualquier formato con audio
             any_audio = sorted(
-                [f for f in formats if f.get('acodec') not in (None, 'none') and f.get('url')],
+                [f for f in formats if
+                 f.get('url') and
+                 f.get('acodec') not in (None, 'none')],
                 key=lambda f: f.get('abr') or f.get('tbr') or 0,
                 reverse=True
             )
@@ -131,8 +136,8 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 raise RuntimeError("El video no tiene formatos de audio disponibles")
 
             chosen = chosen_formats[0]
-            fmt_id = chosen.get('format_id', 'bestaudio/best')
-            logging.info(f"✅ Formato elegido: {fmt_id} | codec: {chosen.get('acodec')} | bitrate: {chosen.get('abr')}")
+            fmt_id = chosen['format_id']
+            logging.info(f"✅ Formato elegido: id={fmt_id} ext={chosen.get('ext')} codec={chosen.get('acodec')} abr={chosen.get('abr')}")
 
             # Paso 3: descargar con el format_id exacto
             dl_opts = dict(YTDL_BASE_OPTIONS)
