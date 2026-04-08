@@ -77,12 +77,12 @@ else:
 
 # Configuración de yt-dlp para streaming directo (sin descargar)
 YTDL_OPTIONS = {
-    'format': 'bestaudio/best',
     'noplaylist': True,
     'default_search': 'ytsearch',
     'quiet': True,
     'no_warnings': True,
     'ignoreerrors': False,
+    'ignoreconfig': True,
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
@@ -121,10 +121,34 @@ class YTDLSource(discord.PCMVolumeTransformer):
                     info = next((e for e in info['entries'] if e), None)
                 if not info:
                     raise RuntimeError("No se pudo obtener información del video")
+
+                formats = info.get('formats') or []
+                audio_only = sorted(
+                    [f for f in formats if f.get('url') and f.get('acodec') not in (None, 'none') and f.get('vcodec') in (None, 'none')],
+                    key=lambda f: f.get('abr') or f.get('tbr') or 0,
+                    reverse=True,
+                )
+                any_audio = sorted(
+                    [f for f in formats if f.get('url') and f.get('acodec') not in (None, 'none')],
+                    key=lambda f: f.get('abr') or f.get('tbr') or 0,
+                    reverse=True,
+                )
+
+                chosen = (audio_only or any_audio or [None])[0]
+                stream_url = chosen.get('url') if chosen else info.get('url')
+                if not stream_url:
+                    raise RuntimeError("No se pudo obtener un stream de audio válido")
+
+                info['selected_stream_url'] = stream_url
+                if chosen:
+                    logging.info(
+                        f"🎧 Stream elegido: id={chosen.get('format_id')} ext={chosen.get('ext')} "
+                        f"acodec={chosen.get('acodec')} abr={chosen.get('abr')}"
+                    )
                 return info
 
         data = await loop.run_in_executor(None, _extract)
-        stream_url = data.get('url')
+        stream_url = data.get('selected_stream_url')
         if not stream_url:
             raise RuntimeError("No se pudo obtener la URL de streaming")
 
@@ -296,7 +320,6 @@ async def formatos(ctx: discord.ApplicationContext, url: str):
 
     def _extract_formats():
         info_opts = dict(YTDL_OPTIONS)
-        info_opts.pop('format', None)
         with youtube_dl.YoutubeDL(info_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if 'entries' in info:
