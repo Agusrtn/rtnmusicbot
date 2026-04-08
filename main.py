@@ -55,14 +55,14 @@ intents.message_content = True
 intents.voice_states = True
 bot = discord.Bot(intents=intents)
 
-# Configuración de yt-dlp
-ytdl_format_options = {
-    'format': 'bestaudio[acodec!=none]/bestaudio/best',
+# Configuración base de yt-dlp (sin formato fijo, se define por intento)
+YTDL_BASE_OPTIONS = {
     'noplaylist': True,
     'default_search': 'ytsearch',
     'quiet': True,
     'no_warnings': True,
     'ignoreerrors': False,
+    'check_formats': False,
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
@@ -71,17 +71,19 @@ ytdl_format_options = {
             'player_client': ['android_music', 'android', 'web'],
         }
     },
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
-        'preferredquality': '128',
-    }],
 }
 
 if COOKIES_FILE:
-    ytdl_format_options['cookiefile'] = COOKIES_FILE
+    YTDL_BASE_OPTIONS['cookiefile'] = COOKIES_FILE
 
-ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
+FORMAT_CANDIDATES = [
+    'bestaudio[acodec!=none]/bestaudio/best',
+    'bestaudio/best',
+    'bestaudio',
+    'best[height<=480]',
+    'best',
+    'worst',
+]
 
 class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, volume=0.5):
@@ -101,34 +103,38 @@ class YTDLSource(discord.PCMVolumeTransformer):
     @classmethod
     async def from_url(cls, url, *, loop=None):
         loop = loop or bot.loop
-        tmpdir = tempfile.mkdtemp()
-        opts = dict(ytdl_format_options)
-        opts['outtmpl'] = os.path.join(tmpdir, '%(id)s.%(ext)s')
-        if COOKIES_FILE:
-            opts['cookiefile'] = COOKIES_FILE
 
-        def _download():
+        def _try_download(fmt):
+            tmpdir = tempfile.mkdtemp()
+            opts = dict(YTDL_BASE_OPTIONS)
+            opts['format'] = fmt
+            opts['outtmpl'] = os.path.join(tmpdir, '%(id)s.%(ext)s')
             with youtube_dl.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if 'entries' in info:
                     info = next((e for e in info['entries'] if e), None)
                 if not info:
-                    raise RuntimeError("No se pudo obtener información del video")
-                base = ydl.prepare_filename(info)
-                mp3_path = os.path.splitext(base)[0] + '.mp3'
-                if os.path.exists(mp3_path):
-                    return mp3_path, info
-                # fallback: buscar cualquier archivo descargado en tmpdir
-                files = [f for f in os.listdir(tmpdir) if not f.endswith('.part')]
-                if files:
-                    return os.path.join(tmpdir, files[0]), info
-                raise RuntimeError("No se encontró el archivo de audio descargado")
+                    raise RuntimeError("No se obtuvo info del video")
+                # buscar el archivo descargado
+                files = [f for f in os.listdir(tmpdir) if not f.endswith('.part') and os.path.getsize(os.path.join(tmpdir, f)) > 0]
+                if not files:
+                    raise RuntimeError("No se encontró archivo de audio descargado")
+                return os.path.join(tmpdir, files[0]), info
 
-        filepath, data = await loop.run_in_executor(None, _download)
-        logging.info(f"✅ Audio descargado: {filepath}")
-        ffmpeg_source = discord.FFmpegPCMAudio(filepath, options="-vn")
-        ffmpeg_source._filepath = filepath
-        return cls(ffmpeg_source, data=data)
+        last_err = None
+        for fmt in FORMAT_CANDIDATES:
+            try:
+                logging.info(f"⏳ Intentando formato: {fmt}")
+                filepath, data = await loop.run_in_executor(None, lambda f=fmt: _try_download(f))
+                logging.info(f"✅ Audio descargado con formato '{fmt}': {filepath}")
+                ffmpeg_source = discord.FFmpegPCMAudio(filepath, options="-vn")
+                ffmpeg_source._filepath = filepath
+                return cls(ffmpeg_source, data=data)
+            except Exception as e:
+                logging.warning(f"⚠️ Formato '{fmt}' falló: {e}")
+                last_err = e
+
+        raise RuntimeError(f"No se pudo descargar la canción: {last_err}")
 
 @bot.event
 async def on_ready():
