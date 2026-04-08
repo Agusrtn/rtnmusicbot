@@ -53,7 +53,21 @@ if youtube_cookies:
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
-bot = discord.Bot(intents=intents)
+
+# Si defines DISCORD_GUILD_ID, los slash commands aparecen casi al instante en ese servidor.
+guild_ids_env = os.getenv('DISCORD_GUILD_ID', '').strip()
+debug_guilds = []
+if guild_ids_env:
+    for raw_id in guild_ids_env.split(','):
+        raw_id = raw_id.strip()
+        if raw_id.isdigit():
+            debug_guilds.append(int(raw_id))
+
+if debug_guilds:
+    logging.info(f"🧪 Registrando comandos en guilds de debug: {debug_guilds}")
+    bot = discord.Bot(intents=intents, debug_guilds=debug_guilds)
+else:
+    bot = discord.Bot(intents=intents)
 
 # Configuración base de yt-dlp (sin formato fijo, se define por intento)
 YTDL_BASE_OPTIONS = {
@@ -183,6 +197,11 @@ class YTDLSource(discord.PCMVolumeTransformer):
 @bot.event
 async def on_ready():
     print(f'✅ {bot.user} está listo!')
+    try:
+        await bot.sync_commands()
+        logging.info("🔄 Slash commands sincronizados")
+    except Exception as e:
+        logging.warning(f"No se pudieron sincronizar slash commands: {e}")
 
 
 async def safe_reply(ctx: discord.ApplicationContext, content: str, ephemeral: bool = False):
