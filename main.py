@@ -62,7 +62,6 @@ YTDL_BASE_OPTIONS = {
     'quiet': True,
     'no_warnings': True,
     'ignoreerrors': False,
-    'check_formats': False,
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
@@ -76,14 +75,6 @@ YTDL_BASE_OPTIONS = {
 if COOKIES_FILE:
     YTDL_BASE_OPTIONS['cookiefile'] = COOKIES_FILE
 
-FORMAT_CANDIDATES = [
-    'bestaudio[acodec!=none]/bestaudio/best',
-    'bestaudio/best',
-    'bestaudio',
-    'best[height<=480]',
-    'best',
-    'worst',
-]
 
 class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, volume=0.5):
@@ -104,37 +95,67 @@ class YTDLSource(discord.PCMVolumeTransformer):
     async def from_url(cls, url, *, loop=None):
         loop = loop or bot.loop
 
-        def _try_download(fmt):
+        def _download():
             tmpdir = tempfile.mkdtemp()
-            opts = dict(YTDL_BASE_OPTIONS)
-            opts['format'] = fmt
-            opts['outtmpl'] = os.path.join(tmpdir, '%(id)s.%(ext)s')
-            with youtube_dl.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
+
+            # Paso 1: extraer info sin descargar para ver qué formatos existen
+            info_opts = dict(YTDL_BASE_OPTIONS)
+            info_opts['format'] = 'bestaudio/best'
+            info_opts['skip_download'] = True
+
+            with youtube_dl.YoutubeDL(info_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
                 if 'entries' in info:
                     info = next((e for e in info['entries'] if e), None)
                 if not info:
-                    raise RuntimeError("No se obtuvo info del video")
-                # buscar el archivo descargado
-                files = [f for f in os.listdir(tmpdir) if not f.endswith('.part') and os.path.getsize(os.path.join(tmpdir, f)) > 0]
-                if not files:
-                    raise RuntimeError("No se encontró archivo de audio descargado")
-                return os.path.join(tmpdir, files[0]), info
+                    raise RuntimeError("No se pudo obtener información del video")
 
-        last_err = None
-        for fmt in FORMAT_CANDIDATES:
-            try:
-                logging.info(f"⏳ Intentando formato: {fmt}")
-                filepath, data = await loop.run_in_executor(None, lambda f=fmt: _try_download(f))
-                logging.info(f"✅ Audio descargado con formato '{fmt}': {filepath}")
-                ffmpeg_source = discord.FFmpegPCMAudio(filepath, options="-vn")
-                ffmpeg_source._filepath = filepath
-                return cls(ffmpeg_source, data=data)
-            except Exception as e:
-                logging.warning(f"⚠️ Formato '{fmt}' falló: {e}")
-                last_err = e
+            # Paso 2: elegir el mejor formato de audio disponible
+            formats = info.get('formats') or []
+            
+            # audio-only ordenados por bitrate descendente
+            audio_only = sorted(
+                [f for f in formats if f.get('acodec') not in (None, 'none') and f.get('vcodec') in (None, 'none') and f.get('url')],
+                key=lambda f: f.get('abr') or f.get('tbr') or 0,
+                reverse=True
+            )
+            # si no hay audio-only, usar formatos con audio+video
+            any_audio = sorted(
+                [f for f in formats if f.get('acodec') not in (None, 'none') and f.get('url')],
+                key=lambda f: f.get('abr') or f.get('tbr') or 0,
+                reverse=True
+            )
 
-        raise RuntimeError(f"No se pudo descargar la canción: {last_err}")
+            chosen_formats = audio_only if audio_only else any_audio
+            if not chosen_formats:
+                raise RuntimeError("El video no tiene formatos de audio disponibles")
+
+            chosen = chosen_formats[0]
+            fmt_id = chosen.get('format_id', 'bestaudio/best')
+            logging.info(f"✅ Formato elegido: {fmt_id} | codec: {chosen.get('acodec')} | bitrate: {chosen.get('abr')}")
+
+            # Paso 3: descargar con el format_id exacto
+            dl_opts = dict(YTDL_BASE_OPTIONS)
+            dl_opts['format'] = fmt_id
+            dl_opts['outtmpl'] = os.path.join(tmpdir, '%(id)s.%(ext)s')
+
+            with youtube_dl.YoutubeDL(dl_opts) as ydl:
+                ydl.download([info.get('webpage_url') or url])
+
+            files = [
+                f for f in os.listdir(tmpdir)
+                if not f.endswith('.part') and os.path.getsize(os.path.join(tmpdir, f)) > 0
+            ]
+            if not files:
+                raise RuntimeError("No se encontró el archivo descargado")
+
+            return os.path.join(tmpdir, files[0]), info
+
+        filepath, data = await loop.run_in_executor(None, _download)
+        logging.info(f"▶️ Reproduciendo desde: {filepath}")
+        ffmpeg_source = discord.FFmpegPCMAudio(filepath, options="-vn")
+        ffmpeg_source._filepath = filepath
+        return cls(ffmpeg_source, data=data)
 
 @bot.event
 async def on_ready():
