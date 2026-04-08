@@ -304,9 +304,56 @@ async def help_command(ctx: discord.ApplicationContext):
     embed.add_field(name="/pause", value="Pausa la música actual", inline=False)
     embed.add_field(name="/resume", value="Reanuda la música pausada", inline=False)
     embed.add_field(name="/stop", value="Detiene la música y desconecta del canal", inline=False)
+    embed.add_field(name="/formatos <url>", value="Muestra formatos disponibles detectados por yt-dlp", inline=False)
     embed.add_field(name="/help", value="Muestra este mensaje de ayuda", inline=False)
     
     await ctx.respond(embed=embed, ephemeral=True)
+
+
+@bot.slash_command(name="formatos", description="Lista formatos disponibles de un video de YouTube")
+async def formatos(ctx: discord.ApplicationContext, url: str):
+    try:
+        await ctx.defer(ephemeral=True)
+    except Exception:
+        pass
+
+    loop = bot.loop
+
+    def _extract_formats():
+        info_opts = dict(YTDL_BASE_OPTIONS)
+        with youtube_dl.YoutubeDL(info_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if 'entries' in info:
+                info = next((e for e in info['entries'] if e), None)
+            if not info:
+                raise RuntimeError("No se pudo obtener información del video")
+
+        formats = info.get('formats') or []
+        audio_formats = [f for f in formats if f.get('acodec') not in (None, 'none') and f.get('url')]
+        audio_formats = sorted(audio_formats, key=lambda f: f.get('abr') or f.get('tbr') or 0, reverse=True)
+        return info, audio_formats
+
+    try:
+        info, audio_formats = await loop.run_in_executor(None, _extract_formats)
+        if not audio_formats:
+            await safe_reply(ctx, "❌ No se detectaron formatos con audio para ese video.", ephemeral=True)
+            return
+
+        lines = []
+        for f in audio_formats[:15]:
+            lines.append(
+                f"id={f.get('format_id')} | ext={f.get('ext')} | acodec={f.get('acodec')} | "
+                f"vcodec={f.get('vcodec')} | abr={f.get('abr')} | tbr={f.get('tbr')}"
+            )
+
+        title = info.get('title', 'Sin título')
+        text = f"🎵 **{title}**\nFormatos detectados (top 15):\n" + "\n".join(lines)
+
+        if len(text) > 1900:
+            text = text[:1900] + "\n..."
+        await safe_reply(ctx, text, ephemeral=True)
+    except Exception as e:
+        await safe_reply(ctx, f"❌ Error al listar formatos: {e}", ephemeral=True)
 
 # Ejecutar el bot
 if __name__ == "__main__":
