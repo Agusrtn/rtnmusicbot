@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import logging
 import threading
 import time
+import asyncio
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 logging.basicConfig(level=logging.INFO)
@@ -83,8 +84,14 @@ YTDL_OPTIONS = {
     'no_warnings': True,
     'ignoreerrors': False,
     'ignoreconfig': True,
+    'check_formats': False,
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    },
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['tv_embedded', 'web', 'android'],
+        }
     },
 }
 
@@ -155,8 +162,8 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
                 logging.warning("⚠️ Reintentando extracción con opciones seguras de yt-dlp")
                 fallback_opts = dict(YTDL_OPTIONS)
-                fallback_opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
-                fallback_opts['format'] = 'best'
+                fallback_opts['extractor_args'] = {'youtube': {'player_client': ['mweb']}}
+                fallback_opts['check_formats'] = False
 
                 info = _extract_info(fallback_opts)
                 return _pick_stream(info)
@@ -234,32 +241,39 @@ async def play(ctx: discord.ApplicationContext, cancion: str):
 
     await safe_reply(ctx, f"🎵 Buscando: **{cancion}**...")
 
+    # Extraer audio ANTES de conectar a voz para evitar que la sesión expire (error 4006)
+    try:
+        source = await YTDLSource.from_url(cancion, loop=bot.loop)
+    except Exception as e:
+        await safe_reply(ctx, f"❌ Error al reproducir la canción: {str(e)}")
+        return
+
     channel = ctx.author.voice.channel
 
     try:
         voice_client = ctx.guild.voice_client
-        if voice_client and voice_client.channel != channel:
-            await voice_client.move_to(channel)
-        elif not voice_client:
-            voice_client = await channel.connect()
+
+        # Limpiar sesión previa para evitar error 4006
+        if voice_client:
+            if voice_client.is_playing():
+                voice_client.stop()
+            try:
+                await voice_client.disconnect(force=True)
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+
+        voice_client = await channel.connect()
     except Exception as e:
         await safe_reply(ctx, f"❌ Error al conectarme al canal de voz: {e}")
         return
-    
-    try:
-        # Obtener stream directo y reproducir
-        source = await YTDLSource.from_url(cancion, loop=bot.loop)
-        
-        # Reproducir la canción
-        def after_play(e):
-            if e:
-                logging.error(f'Error durante reproducción: {e}')
 
-        voice_client.play(source, after=after_play)
-        await safe_reply(ctx, f"▶️ Reproduciendo: **{source.title}**")
-    
-    except Exception as e:
-        await safe_reply(ctx, f"❌ Error al reproducir la canción: {str(e)}")
+    def after_play(e):
+        if e:
+            logging.error(f'Error durante reproducción: {e}')
+
+    voice_client.play(source, after=after_play)
+    await safe_reply(ctx, f"▶️ Reproduciendo: **{source.title}**")
 
 @bot.slash_command(name="stop", description="Detiene la reproducción de música")
 async def stop(ctx: discord.ApplicationContext):
