@@ -76,8 +76,9 @@ if debug_guilds:
 else:
     bot = discord.Bot(intents=intents)
 
-# Configuración de yt-dlp para streaming directo (sin descargar)
-YTDL_OPTIONS = {
+# Opciones base de yt-dlp para streaming directo
+YTDL_BASE = {
+    'format': 'bestaudio/best',
     'noplaylist': True,
     'default_search': 'ytsearch',
     'quiet': True,
@@ -88,12 +89,15 @@ YTDL_OPTIONS = {
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     },
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['tv_embedded', 'web', 'android'],
-        }
-    },
 }
+
+# Clientes de YouTube a probar en orden (android_vr no requiere PO token en servidores)
+YT_CLIENTS = [
+    ['android_vr'],
+    ['android'],
+    ['ios'],
+    ['web'],
+]
 
 # Opciones de FFmpeg para streaming (reconexión automática)
 FFMPEG_OPTIONS = {
@@ -102,7 +106,7 @@ FFMPEG_OPTIONS = {
 }
 
 if COOKIES_FILE:
-    YTDL_OPTIONS['cookiefile'] = COOKIES_FILE
+    YTDL_BASE['cookiefile'] = COOKIES_FILE
 
 
 class YTDLSource(discord.PCMVolumeTransformer):
@@ -117,56 +121,49 @@ class YTDLSource(discord.PCMVolumeTransformer):
         loop = loop or bot.loop
 
         def _extract():
-            def _extract_info(opts):
-                with youtube_dl.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                if 'entries' in info:
-                    info = next((e for e in info['entries'] if e), None)
-                if not info:
-                    raise RuntimeError("No se pudo obtener información del video")
-                return info
+            last_error = None
+            for client in YT_CLIENTS:
+                opts = dict(YTDL_BASE)
+                opts['extractor_args'] = {'youtube': {'player_client': client}}
+                logging.info(f"🔎 Intentando cliente YouTube: {client}")
+                try:
+                    with youtube_dl.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                    if 'entries' in info:
+                        info = next((e for e in info['entries'] if e), None)
+                    if not info:
+                        raise RuntimeError("No se pudo obtener información del video")
 
-            def _pick_stream(info):
-                formats = info.get('formats') or []
-                audio_only = sorted(
-                    [f for f in formats if f.get('url') and f.get('acodec') not in (None, 'none') and f.get('vcodec') in (None, 'none')],
-                    key=lambda f: f.get('abr') or f.get('tbr') or 0,
-                    reverse=True,
-                )
-                any_audio = sorted(
-                    [f for f in formats if f.get('url') and f.get('acodec') not in (None, 'none')],
-                    key=lambda f: f.get('abr') or f.get('tbr') or 0,
-                    reverse=True,
-                )
+                    # yt-dlp resolvió la URL directamente
+                    stream_url = info.get('url')
+                    if not stream_url:
+                        # Buscarla manualmente en formats
+                        formats = info.get('formats') or []
+                        audio_only = sorted(
+                            [f for f in formats if f.get('url') and f.get('acodec') not in (None, 'none') and f.get('vcodec') in (None, 'none')],
+                            key=lambda f: f.get('abr') or f.get('tbr') or 0,
+                            reverse=True,
+                        )
+                        any_audio = sorted(
+                            [f for f in formats if f.get('url') and f.get('acodec') not in (None, 'none')],
+                            key=lambda f: f.get('abr') or f.get('tbr') or 0,
+                            reverse=True,
+                        )
+                        chosen = (audio_only or any_audio or [None])[0]
+                        stream_url = chosen.get('url') if chosen else None
 
-                chosen = (audio_only or any_audio or [None])[0]
-                stream_url = chosen.get('url') if chosen else info.get('url')
-                if not stream_url:
-                    raise RuntimeError("No se pudo obtener un stream de audio válido")
+                    if not stream_url:
+                        raise RuntimeError("No hay URL de audio disponible")
 
-                info['selected_stream_url'] = stream_url
-                if chosen:
-                    logging.info(
-                        f"🎧 Stream elegido: id={chosen.get('format_id')} ext={chosen.get('ext')} "
-                        f"acodec={chosen.get('acodec')} abr={chosen.get('abr')}"
-                    )
-                return info
+                    info['selected_stream_url'] = stream_url
+                    logging.info(f"✅ Stream obtenido con cliente {client}: {info.get('title')}")
+                    return info
 
-            try:
-                info = _extract_info(dict(YTDL_OPTIONS))
-                return _pick_stream(info)
-            except Exception as first_error:
-                msg = str(first_error)
-                if "Requested format is not available" not in msg:
-                    raise
+                except Exception as e:
+                    logging.warning(f"⚠️ Cliente {client} falló: {e}")
+                    last_error = e
 
-                logging.warning("⚠️ Reintentando extracción con opciones seguras de yt-dlp")
-                fallback_opts = dict(YTDL_OPTIONS)
-                fallback_opts['extractor_args'] = {'youtube': {'player_client': ['mweb']}}
-                fallback_opts['check_formats'] = False
-
-                info = _extract_info(fallback_opts)
-                return _pick_stream(info)
+            raise last_error or RuntimeError("Todos los clientes de YouTube fallaron")
 
         data = await loop.run_in_executor(None, _extract)
         stream_url = data.get('selected_stream_url')
@@ -347,32 +344,27 @@ async def formatos(ctx: discord.ApplicationContext, url: str):
     loop = bot.loop
 
     def _extract_formats():
-        def _extract_info(opts):
-            with youtube_dl.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-            if 'entries' in info:
-                info = next((e for e in info['entries'] if e), None)
-            if not info:
-                raise RuntimeError("No se pudo obtener información del video")
-            return info
+        last_error = None
+        for client in YT_CLIENTS:
+            opts = dict(YTDL_BASE)
+            opts['extractor_args'] = {'youtube': {'player_client': client}}
+            try:
+                with youtube_dl.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                if 'entries' in info:
+                    info = next((e for e in info['entries'] if e), None)
+                if not info:
+                    raise RuntimeError("No se pudo obtener información del video")
 
-        try:
-            info = _extract_info(dict(YTDL_OPTIONS))
-        except Exception as first_error:
-            msg = str(first_error)
-            if "Requested format is not available" not in msg:
-                raise
+                formats = info.get('formats') or []
+                audio_formats = [f for f in formats if f.get('acodec') not in (None, 'none') and f.get('url')]
+                audio_formats = sorted(audio_formats, key=lambda f: f.get('abr') or f.get('tbr') or 0, reverse=True)
+                return info, audio_formats
+            except Exception as e:
+                logging.warning(f"⚠️ /formatos: cliente {client} falló: {e}")
+                last_error = e
 
-            logging.warning("⚠️ Reintentando listado con opciones seguras de yt-dlp")
-            fallback_opts = dict(YTDL_OPTIONS)
-            fallback_opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
-            fallback_opts['format'] = 'best'
-            info = _extract_info(fallback_opts)
-
-        formats = info.get('formats') or []
-        audio_formats = [f for f in formats if f.get('acodec') not in (None, 'none') and f.get('url')]
-        audio_formats = sorted(audio_formats, key=lambda f: f.get('abr') or f.get('tbr') or 0, reverse=True)
-        return info, audio_formats
+        raise last_error or RuntimeError("Todos los clientes de YouTube fallaron")
 
     try:
         info, audio_formats = await loop.run_in_executor(None, _extract_formats)
