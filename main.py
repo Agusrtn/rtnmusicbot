@@ -9,6 +9,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 logging.basicConfig(level=logging.INFO)
 
+BOT_VERSION = (
+    os.getenv('BOT_VERSION')
+    or os.getenv('RENDER_GIT_COMMIT')
+    or os.getenv('GIT_COMMIT')
+    or 'unknown'
+)
+
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -308,6 +315,7 @@ async def formatos(ctx: discord.ApplicationContext, url: str):
 # Ejecutar el bot
 if __name__ == "__main__":
     start_healthcheck_server()
+    logging.info(f"🚀 Iniciando RTN MUSIC BOT | version={BOT_VERSION}")
 
     retry_seconds = int(os.getenv("DISCORD_RETRY_SECONDS", "180"))
     while True:
