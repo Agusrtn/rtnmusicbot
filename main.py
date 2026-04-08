@@ -136,10 +136,29 @@ class YTDLSource(discord.PCMVolumeTransformer):
 async def on_ready():
     print(f'✅ {bot.user} está listo!')
     try:
+        await bot.change_presence(
+            status=discord.Status.online,
+            activity=discord.Activity(type=discord.ActivityType.listening, name="/play")
+        )
+        logging.info("🟢 Presencia configurada: online")
+    except Exception as e:
+        logging.warning(f"No se pudo configurar presencia: {e}")
+
+    try:
         await bot.sync_commands()
         logging.info("🔄 Slash commands sincronizados")
     except Exception as e:
         logging.warning(f"No se pudieron sincronizar slash commands: {e}")
+
+
+@bot.event
+async def on_disconnect():
+    logging.warning("⚠️ Bot desconectado de Discord")
+
+
+@bot.event
+async def on_resumed():
+    logging.info("✅ Sesión de Discord reanudada")
 
 
 async def safe_reply(ctx: discord.ApplicationContext, content: str, ephemeral: bool = False):
